@@ -287,8 +287,11 @@ if video_file is not None:
         st.video(final_path)
 
         with open(final_path, "rb") as f:
-            st.download_button("📥 Recap Video Download", f, file_name="final_recap.mp4")
-
-        with st.expander("📝 Script"):
-            st.text(script)
-          
+    st.download_button(
+        label="📥 Recap Video Download",
+        data=f,
+        file_name="final_recap.mp4",
+        mime="video/mp4",
+        key="recap_download_btn",
+        use_container_width=True
+    )
