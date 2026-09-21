@@ -241,14 +241,21 @@ if video_file is not None:
                 ref_audio_path=st.session_state.ref_audio_path,
                 progress_callback=update_progress
             )
-            st.write("✅ အသံ ထုတ်ပြီး")
+    st.write("✅ အသံ ထုတ်ပြီး")
 
-            audio_dur = float(ffmpeg.probe(audio_path)['format']['duration'])
-            tempo = max(0.8, min(1.2, audio_dur / video_duration))
-            st.write(f"🎙️ အသံ ({audio_dur:.1f}s) | Tempo: {tempo:.2f}x")
-        except Exception as e:
-            st.error(f"❌ VoxCPM2 error: {e}")
-            st.stop()
+    audio_dur = float(ffmpeg.probe(audio_path)['format']['duration'])
+
+    if audio_dur > 0:
+        tempo = video_duration / audio_dur
+        tempo = max(0.5, min(2.0, tempo))
+    else:
+        tempo = 1.0
+
+    st.write(f"🎙️ အသံ ({audio_dur:.1f}s) | Tempo: {tempo:.2f}x")
+
+except Exception as e:
+    st.error(f"❌ VoxCPM2 error: {e}")
+    st.stop()
 
         with st.spinner("🎬 Recap Video Render..."):
             final_path = "final_recap.mp4"
