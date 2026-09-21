@@ -56,8 +56,8 @@ class KeyManager:
         return False
 
     def remaining(self):
-        return len(self.keys) - len(self.exhausted)
-      def call_gemini(contents, km):
+        return len(self.keys) - len(self.exhausted)   
+def call_gemini(contents, km):
     attempts = 0
     max_total = len(km.keys) * 3 if km.keys else 3
     while attempts < max_total:
