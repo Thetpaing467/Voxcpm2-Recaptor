@@ -2,3 +2,4 @@ google-genai
 gradio_client
 ffmpeg-python
 streamlit
+requests
