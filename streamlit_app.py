@@ -6,32 +6,36 @@ import shutil
 from google import genai
 from gradio_client import Client, handle_file
 
+# ============================================================
+# Config
+# ============================================================
 LANGUAGE = "Myanmar"
 MODEL = "gemini-3.6-flash"
-VOXCPM_SPACE = "openbmb/VoxCPM-Demo"
+VOXCPM_PRIMARY = "openbmb/VoxCPM-Demo"
+VOXCPM_FALLBACK = "hgghfhjfhjguyjf/Voxcpm-Burmese-Tts"
+PASSWORD = "voxcpm2026"
 
-# ===== Password Check =====
-PASSWORD = "voxcpm2026"  # ← သင့် password ကို ဒီမှာ ပြောင်း
-
+# ============================================================
+# Password Check
+# ============================================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
     st.title("🔐 Private App")
     st.write("Password ထည့်ပါ။")
-
     pwd = st.text_input("Password", type="password")
-
     if st.button("Login"):
         if pwd == PASSWORD:
             st.session_state.authenticated = True
             st.rerun()
         else:
             st.error("❌ Password မှားနေပါတယ်။")
-
     st.stop()
 
-# ===== အောက်မှာ ဆရာ့ code ဆက် =====
+# ============================================================
+# Key Manager
+# ============================================================
 class KeyManager:
     def __init__(self, keys):
         self.keys = [k.strip() for k in keys if k.strip()]
@@ -86,13 +90,10 @@ def call_gemini(contents, km):
 
 
 def split_script(text, max_chars=400):
-    """Script ကို စာကြောင်းအလိုက် ခွဲ"""
     sentences = text.replace("။", "။|").split("|")
     sentences = [s.strip() + "။" for s in sentences if s.strip()]
-
     chunks = []
     current = ""
-
     for sentence in sentences:
         if len(current) + len(sentence) <= max_chars:
             current += sentence
@@ -105,20 +106,18 @@ def split_script(text, max_chars=400):
                 current = ""
             else:
                 current = sentence
-
     if current:
         chunks.append(current)
-
     return chunks
 
 
-def run_tts_chunked(text, output_path, ref_audio_path=None, progress_callback=None):
-    """Script ခွဲ → VoxCPM2 → အသံပေါင်း"""
-    client = Client(VOXCPM_SPACE)
-
-    chunks = split_script(text, max_chars=400)
+# ============================================================
+# TTS — Primary + Fallback
+# ============================================================
+def tts_primary(chunks, ref_audio_path, progress_callback=None):
+    """VoxCPM Demo (Primary)"""
+    client = Client(VOXCPM_PRIMARY)
     audio_files = []
-
     ref_file = handle_file(ref_audio_path) if ref_audio_path else None
 
     for i, chunk in enumerate(chunks):
@@ -137,17 +136,68 @@ def run_tts_chunked(text, output_path, ref_audio_path=None, progress_callback=No
             api_name="/generate",
         )
 
-        # ✅ Result ကို safely ဖတ်
-        if isinstance(result, (tuple, list)):
-            audio_path = result[0]
-        else:
-            audio_path = result
-
-        chunk_path = f"chunk_{i}.wav"
+        audio_path = result[0] if isinstance(result, (tuple, list)) else result
+        chunk_path = f"chunk_primary_{i}.wav"
         shutil.copy(audio_path, chunk_path)
         audio_files.append(chunk_path)
 
-    # ===== အသံဖိုင်တွေ ပေါင်း (192k + 48kHz) =====
+    return audio_files
+
+
+def tts_fallback(chunks, ref_audio_path, progress_callback=None):
+    """VoxCPM Burmese TTS (Fallback)"""
+    client = Client(VOXCPM_FALLBACK)
+    audio_files = []
+
+    # Ref audio — မဖြစ်မနေ လိုတယ်
+    if not ref_audio_path:
+        raise Exception("Fallback — Reference Audio လိုတယ်")
+    ref_file = handle_file(ref_audio_path)
+
+    for i, chunk in enumerate(chunks):
+        if progress_callback:
+            progress_callback(i, len(chunks), chunk)
+
+        result = client.predict(
+            target_text=chunk,
+            ref_audio=ref_file,
+            ref_text="မြန်မာ အသံနမူနာ",
+            cfg_value=2.0,
+            inference_timesteps=10,
+            api_name="/tts"
+        )
+
+        audio_path = result[0] if isinstance(result, (tuple, list)) else result
+        chunk_path = f"chunk_fallback_{i}.wav"
+        shutil.copy(audio_path, chunk_path)
+        audio_files.append(chunk_path)
+
+    return audio_files
+
+
+def run_tts_chunked(text, output_path, ref_audio_path=None, progress_callback=None):
+    """Primary → Fail → Fallback"""
+    chunks = split_script(text, max_chars=400)
+
+    # ===== Try Primary =====
+    audio_files = None
+    try:
+        st.info("🎙️ Primary Space (VoxCPM Demo)...")
+        audio_files = tts_primary(chunks, ref_audio_path, progress_callback)
+        st.success("✅ Primary Space — အောင်မြင်")
+
+    except Exception as e:
+        st.warning(f"⚠️ Primary fail: {str(e)[:200]}")
+        st.info("🔄 Fallback Space (VoxCPM Burmese TTS)...")
+
+        # ===== Fallback =====
+        try:
+            audio_files = tts_fallback(chunks, ref_audio_path, progress_callback)
+            st.success("✅ Fallback Space — အောင်မြင်")
+        except Exception as e2:
+            raise Exception(f"Primary + Fallback နှစ်ခုလုံး fail:\n{e}\n---\n{e2}")
+
+    # ===== Concat =====
     with open("concat_list.txt", "w", encoding="utf-8") as f:
         for audio in audio_files:
             f.write(f"file '{audio}'\n")
@@ -162,6 +212,9 @@ def run_tts_chunked(text, output_path, ref_audio_path=None, progress_callback=No
     return output_path
 
 
+# ============================================================
+# UI
+# ============================================================
 st.set_page_config(page_title="🎬 VoxCPM2 Movie Recap", page_icon="🎬")
 st.title("🎬 VoxCPM2 Movie Recap")
 st.write("ဗီဒီယို upload တင်ပြီး VoxCPM2 အသံနဲ့ Recap ဖန်တီးပါ")
@@ -207,9 +260,14 @@ if st.session_state.ref_audio_path:
 else:
     st.sidebar.warning("⚠️ Clone လုပ်ချင်ရင် အသံ တင်ပါ")
 
+# ===== Sidebar — Info =====
+st.sidebar.header("ℹ️ TTS Info")
+st.sidebar.write(f"**Primary:** `{VOXCPM_PRIMARY}`")
+st.sidebar.write(f"**Fallback:** `{VOXCPM_FALLBACK}`")
+st.sidebar.caption("Primary Busy → Auto Fallback")
+
 # ===== Video Upload =====
 video_file = st.file_uploader("📹 ဗီဒီယို Upload", type=["mp4", "mov", "avi", "mkv"])
-
 
 if video_file is not None:
     if st.button("🚀 Generate Recap", type="primary"):
@@ -262,7 +320,6 @@ if video_file is not None:
             st.write("✅ အသံ ထုတ်ပြီး")
 
             audio_dur = float(ffmpeg.probe(audio_path)['format']['duration'])
-            # ===== Tempo လျှော့ (သဘာဝ ကျ) =====
             tempo = max(0.8, min(1.2, audio_dur / video_duration))
             st.write(f"🎙️ အသံ ({audio_dur:.1f}s) | Tempo: {tempo:.2f}x")
         except Exception as e:
@@ -291,4 +348,3 @@ if video_file is not None:
 
         with st.expander("📝 Script"):
             st.text(script)
-      
