@@ -248,6 +248,38 @@ def split_scr(t, mc=TTS_CHUNK):
     return out
 
 
+def video_bypass(input_video, output_video="bypass.mp4",
+                 crop_ratio=0.90, mirror=True):
+    """Video Filter — Mirror + Crop"""
+    W, H, dur = vid_info(input_video)
+    filters = []
+
+    if crop_ratio != 1.0:
+        cw = int(W * crop_ratio); ch = int(H * crop_ratio)
+        if cw % 2 != 0: cw -= 1
+        if ch % 2 != 0: ch -= 1
+        cx = (W - cw) // 2; cy = (H - ch) // 2
+        filters.append(f"crop={cw}:{ch}:{cx}:{cy}")
+        filters.append(f"scale={W}:{H}")
+
+    if mirror:
+        filters.append("hflip")
+
+    vf = ",".join(filters) if filters else "null"
+
+    cmd = [
+        "ffmpeg", "-y", "-i", input_video,
+        "-vf", vf,
+        "-c:v", "libx264", "-crf", str(ENC_CRF), "-preset", "ultrafast",
+        "-c:a", "copy",
+        output_video
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    if r.returncode != 0:
+        raise Exception(f"FFmpeg: {(r.stderr or '')[-300:]}")
+    return output_video
+
+
 def tts_demo(chunks, ref, space, cb=None):
     cl = Client(space); files = []; rf = handle_file(ref) if ref else None
     for i, c in enumerate(chunks):
@@ -406,13 +438,10 @@ def silence_cut_v2(input_video, output_video="input_cut.mp4"):
 
     total = sum(e - s for s, e in speech_segments)
     return {"segments": len(speech_segments), "duration": total, "whisper_time": whisper_time}
-
-
 st.markdown("<div class='main-title'>🎬 Myanmar TTS Recap</div>", unsafe_allow_html=True)
 st.markdown("<div class='main-sub'>Video → Script → VoxCPM2 / Edge TTS သီဟ → Recap</div>", unsafe_allow_html=True)
 st.divider()
 
-# ===== Step 1 — Script (ဖျက်ပြီး) =====
 if "script" not in st.session_state: st.session_state.script = ""
 script = st.text_area("Script", value=st.session_state.script, height=180,
                        label_visibility="collapsed", placeholder="မြန်မာ Script paste...")
@@ -425,13 +454,11 @@ with c2:
         st.session_state.script = ""; st.rerun()
 st.divider()
 
-# ===== Step 2 — Video =====
 st.subheader("📁 Step 2 — Video")
 vid = st.file_uploader("📹", type=["mp4","mov","avi","mkv"], label_visibility="collapsed")
 if vid: st.success(f"✅ {vid.size/(1024*1024):.1f} MB")
 st.divider()
 
-# ===== Step 3 — Subtitle =====
 st.subheader("📝 Step 3 — Subtitle")
 use_sub = st.toggle("Burn-in", value=True)
 pos_y = 100
@@ -456,7 +483,6 @@ if vid and use_sub:
             st.image("prev_out.png", use_container_width=True)
 st.divider()
 
-# ===== Step 4 — Generate =====
 st.subheader("🚀 Step 4 — Generate")
 
 use_voxcpm = st.toggle("🎙️ VoxCPM2 သုံးမလား?", value=True,
@@ -485,6 +511,7 @@ if st.button("✨ Generate Recap Video", type="primary", use_container_width=Tru
     with open("input.mp4", "wb") as f: f.write(vid.read())
     _, _, vdur = vid_info("input.mp4")
 
+    # ၁။ Cut
     t0 = time.time()
     with st.spinner("✂️ Cut..."):
         try:
@@ -495,6 +522,7 @@ if st.button("✨ Generate Recap Video", type="primary", use_container_width=Tru
             st.error(f"❌ Cut: {e}"); st.stop()
     step_times["✂️ Cut"] = time.time() - t0
 
+    # ၂။ TTS
     t0 = time.time()
     pb = st.progress(0); txt = st.empty()
     def cb(i, tot, c): pb.progress((i+1)/tot); txt.caption(f"[{i+1}/{tot}]")
@@ -507,22 +535,39 @@ if st.button("✨ Generate Recap Video", type="primary", use_container_width=Tru
 
     adur = float(ffmpeg.probe("voice.mp3")['format']['duration'])
     tempo = max(0.5, min(2.0, adur/vdur))
-    sp = scr_to_srt(script, vdur, "sub.srt") if use_sub else None
 
+    # ၃။ Video + Audio
     t0 = time.time()
-    with st.spinner("🎬 Render..."):
+    with st.spinner("🎬 Render Base..."):
         vi = ffmpeg.input("input.mp4")
         va = ffmpeg.input("voice.mp3").audio.filter('atempo', tempo)
         ffmpeg.output(vi.video, va, "temp.mp4",
             vcodec='libx264', crf=ENC_CRF, preset='ultrafast', tune='fastdecode',
-            movflags='+faststart', acodec='aac', audio_bitrate=AUDIO_BITRATE,
+            acodec='aac', audio_bitrate=AUDIO_BITRATE,
             shortest=None, threads=0).run(overwrite_output=True)
-        if use_sub and sp:
-            overlay("temp.mp4", sp, "final.mp4", FONT_FILE, FS, pos_y, BH, BA,
+    step_times["🎬 Render"] = time.time() - t0
+
+    # ၄။ Bypass — Mirror + Crop — Auto
+    t0 = time.time()
+    with st.spinner("🛡️ Bypass — Mirror + Crop..."):
+        try:
+            video_bypass("temp.mp4", "bypass.mp4",
+                         crop_ratio=0.90, mirror=True)
+        except Exception as e:
+            st.warning(f"⚠️ Bypass Fail: {e}")
+            shutil.copy("temp.mp4", "bypass.mp4")
+    step_times["🛡️ Bypass"] = time.time() - t0
+
+    # ၅။ Subtitle Overlay
+    t0 = time.time()
+    with st.spinner("📝 Subtitle Overlay..."):
+        if use_sub:
+            sp = scr_to_srt(script, vdur, "sub.srt")
+            overlay("bypass.mp4", sp, "final.mp4", FONT_FILE, FS, pos_y, BH, BA,
                     box_width_ratio=BOX_WIDTH_RATIO)
         else:
-            shutil.copy("temp.mp4", "final.mp4")
-    step_times["🎬 Render"] = time.time() - t0
+            shutil.copy("bypass.mp4", "final.mp4")
+    step_times["📝 Subtitle"] = time.time() - t0
 
     total_elapsed = time.time() - total_start
 
